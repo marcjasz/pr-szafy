@@ -1,7 +1,9 @@
 #![allow(dead_code)]
 use mpi::traits::*;
 use crate::util;
+use crate::MessageTag;
 use rand::Rng;
+use std::convert::TryInto;
 
 struct Agent<S> {
     need: u8,
@@ -124,9 +126,26 @@ pub fn main_loop(world: mpi::topology::SystemCommunicator) {
     let rank = world.rank();
     let mut rng = rand::thread_rng();
     let mut agent = AgentWrapper::Rest(Agent::new(rank, 8));
-    for _i in 1..8 {
-        agent = agent.next();
+    let msg: Vec<u8> = vec![1, rank.try_into().unwrap()];
+    loop {
+        let next_state = agent.next();
         let secs = rng.gen_range(1, 5);
+        match &next_state {
+            AgentWrapper::Up(_state) => {
+                broadcast_with_tag(world, &msg, MessageTag::Resources as i32);
+            }
+            _ => {
+                ();
+            }
+        }
+        agent = next_state;
         std::thread::sleep(std::time::Duration::from_secs(secs));
+    }
+}
+
+
+fn broadcast_with_tag(world: mpi::topology::SystemCommunicator, message: &Vec<u8>, tag: i32) {
+    for i in 1..world.size() {
+        world.process_at_rank(i).send_with_tag(&message[..], tag);
     }
 }

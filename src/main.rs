@@ -1,12 +1,20 @@
 #![deny(warnings)]
 extern crate mpi;
 
-use mpi::Threading;
+use mpi::{
+    Threading,
+};
 use std::sync::Arc;
 use std::thread;
 mod comm;
 mod agent;
 mod util;
+
+pub enum MessageTag {
+    Resources = 1,
+    EnterRequest = 2,
+    LeaveRequest = 3,
+}
 
 // mpirun -n 4 target/debug/rust-pg
 
