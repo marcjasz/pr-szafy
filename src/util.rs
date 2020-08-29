@@ -1,7 +1,24 @@
 use ansi_term::Colour::Fixed;
+use std::sync::RwLock;
+use crate::comm;
 
-pub fn log(rank: i32, msg: String) -> () {
-    let color_num = ((rank * 48) + (rank / 256)) % 240 + 15;
-    let color = Fixed(color_num as u8);
-    println!("{}. {}", rank, color.paint(msg));
+pub struct Logger<'a> {
+    clock: &'a RwLock<comm::Clock>,
+    rank: i32
+}
+
+impl Logger<'_> {
+    pub fn new(clock: &RwLock<comm::Clock>, rank: i32) -> Logger {
+        Logger {
+            clock: clock,
+            rank: rank
+        }
+    }
+
+    pub fn log(&self, msg: String) -> () {
+        let color = Fixed(self.rank as u8 + 9);
+        let time = { self.clock.read().unwrap().time };
+        let signature = format!("[{}:{}]", time, self.rank);
+        println!("{} {}", color.bold().paint(signature), color.paint(msg));
+    }
 }

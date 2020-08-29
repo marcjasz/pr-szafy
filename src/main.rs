@@ -3,9 +3,12 @@ extern crate mpi;
 
 use mpi::{
     Threading,
+    traits::*
 };
 use std::sync::Arc;
+use std::sync::RwLock;
 use std::thread;
+use mpi::point_to_point as p2p;
 mod comm;
 mod agent;
 mod util;
@@ -33,9 +36,22 @@ fn main() {
     let universe = init_mpi();
     let universe_main = Arc::new(universe);
     let universe_comm = Arc::clone(&universe_main);
+    let clock = comm::Clock::new();
+    let clock_main = Arc::new(RwLock::new(clock));
+    let clock_comm = clock_main.clone();
     let comm_handle = thread::spawn(move || {
-        comm::comm_thread(universe_comm.world());
+        let world = universe_comm.world();
+        let rank = world.rank();
+        let logger = util::Logger::new(&clock_comm, rank);
+        loop {
+            let (message, status): (Vec<u16>, p2p::Status) = comm::receive(&clock_comm, &world);
+
+            logger.log(format!(
+                "Got message {:?}. Status is: {:?}",
+                message, status)
+            );
+        }
     });
-    agent::main_loop(universe_main.world());
+    agent::main_loop(&clock_main, &universe_main.world());
     comm_handle.join().unwrap();
 }
