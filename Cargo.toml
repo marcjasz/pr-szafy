@@ -1,5 +1,5 @@
 [package]
-name = "rust-pg"
+name = "pr-szafy"
 version = "0.1.0"
 authors = ["marcin"]
 edition = "2018"

@@ -16,7 +16,7 @@ pub enum MessageTag {
     LeaveRequest = 3,
 }
 
-// mpirun -n 4 target/debug/rust-pg
+// mpirun -n 4 target/debug/pr-szafy
 
 fn check_threading_support(threading: mpi::Threading){
     println!("Supported level of threading: {:?}", threading);
