@@ -33,11 +33,9 @@ fn init_mpi() -> mpi::environment::Universe {
 }
 
 fn main() {
-    let universe = init_mpi();
-    let universe_main = Arc::new(universe);
+    let universe_main = Arc::new(init_mpi());
     let universe_comm = Arc::clone(&universe_main);
-    let clock = comm::Clock::new();
-    let clock_main = Arc::new(RwLock::new(clock));
+    let clock_main = Arc::new(RwLock::new(comm::Clock::new()));
     let clock_comm = clock_main.clone();
     let comm_handle = thread::spawn(move || {
         let world = universe_comm.world();
