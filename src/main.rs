@@ -33,6 +33,8 @@ fn init_mpi() -> mpi::environment::Universe {
 }
 
 fn main() {
+    let rooms_count = 5;
+    let lifts_count = 3;
     let universe_main = Arc::new(init_mpi());
     let universe_comm = Arc::clone(&universe_main);
     let clock_main = Arc::new(RwLock::new(comm::Clock::new()));
@@ -50,6 +52,6 @@ fn main() {
             );
         }
     });
-    agent::main_loop(&clock_main, &universe_main.world());
+    agent::main_loop(&clock_main, &universe_main.world(), rooms_count, lifts_count);
     comm_handle.join().unwrap();
 }
