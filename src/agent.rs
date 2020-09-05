@@ -2,14 +2,15 @@
 use mpi::traits::*;
 use crate::comm;
 use crate::MessageTag;
+use crate::CommonState;
 use crate::util;
 use rand::Rng;
 use std::convert::TryInto;
 use std::sync::RwLock;
 
 
-#[derive(Clone, Debug)]
-struct Agent {
+#[derive(Clone)]
+struct Agent<'world_lifetime> {
     need: u8,
     rank: i32,
     enter_time: i16,
@@ -18,7 +19,8 @@ struct Agent {
     lifts: Vec<u8>,
     defer_rooms: Vec<u8>,
     defer_lifts: Vec<u8>,
-    state: AgentState
+    state: AgentState,
+    common_state: &'world_lifetime CommonState<'world_lifetime>,
 }
  
 #[derive(Clone, Debug)]
@@ -31,64 +33,73 @@ enum AgentState {
     Up
 }
 
-fn next_state(state: &AgentState) -> AgentState {
-    match state {
-        AgentState::Rest => AgentState::Try,
-        AgentState::Try => AgentState::Down,
-        AgentState::Down => AgentState::Crit,
-        AgentState::Crit => AgentState::Leaving,
-        AgentState::Leaving => AgentState::Up,
-        AgentState::Up => AgentState::Rest,
-    }
-}
-
-impl Agent {
-    fn new(rank: i32, need: u8, world_size: usize) -> Self {
+impl<'world_lifetime> Agent<'world_lifetime> {
+    fn new(rank: i32, need: u8, common_state: &'world_lifetime CommonState) -> Self {
         Agent {
             need: need,
             rank: rank,
-            state: AgentState::Rest ,
+            state: AgentState::Rest,
             enter_time: i16::MIN,
             leave_time: i16::MIN,
-            rooms: vec![0; world_size],
-            lifts: vec![0; world_size],
+            rooms: vec![0; common_state.world.size() as usize],
+            lifts: vec![0; common_state.world.size() as usize],
             defer_rooms: Vec::new(),
-            defer_lifts: Vec::new()
+            defer_lifts: Vec::new(),
+            common_state: common_state,
         }
+    }
+    
+    fn next_state(&self) -> AgentState {
+        match self.state {
+            AgentState::Rest => AgentState::Try,
+            AgentState::Try => AgentState::Down,
+            AgentState::Down => AgentState::Crit,
+            AgentState::Crit => AgentState::Leaving,
+            AgentState::Leaving => AgentState::Up,
+            AgentState::Up => AgentState::Rest,
+        }
+    }
+
+    fn run(&mut self) {
+        match self.state {
+            AgentState::Rest => {},
+            AgentState::Try => {
+                self.rooms = self.rooms
+                    .iter()
+                    .enumerate()
+                    .map(|(index, _value)| 
+                        if index == self.rank as usize {
+                            self.need
+                        } else {
+                            self.common_state.rooms_count
+                        }
+                    )
+                    .collect();
+                self.lifts = vec![1; self.common_state.world.size() as usize];
+            },
+            _ => {}
+        }
+
     }
 }
 
 pub fn main_loop(
     clock: &RwLock<comm::Clock>, 
-    world: &mpi::topology::SystemCommunicator,
-    rooms_count: u8,
-    _lifts_count: u8,
+    common_state: &CommonState,
 ) {
-    let rank = world.rank();
+    let rank = common_state.world.rank();
     let logger = util::Logger::new(clock, rank);
     let mut rng = rand::thread_rng();
-    let mut agent = Agent::new(rank, rng.gen_range(1, rooms_count), world.size() as usize);
+    let mut agent = Agent::new(rank, rng.gen_range(1, common_state.rooms_count), common_state);
     let msg: Vec<u16> = vec![1, rank.try_into().unwrap()];
     loop {
-        let next_state = next_state(&agent.state);
+        let next_state = agent.next_state();
         let secs = rng.gen_range(1, 8);
         match &next_state {
             AgentState::Try => {
                 clock.write().unwrap().inc();
-                agent.rooms = agent.rooms
-                    .iter()
-                    .enumerate()
-                    .map(|(index, _value)| 
-                        if index == agent.rank as usize {
-                            agent.need
-                        } else {
-                            rooms_count
-                        }
-                    )
-                    .collect();
-                agent.lifts = vec![1; world.size() as usize];
                 logger.log("Trying to go down".to_string());
-                comm::broadcast_with_tag(clock, world, &vec![], MessageTag::EnterRequest as i32);
+                comm::broadcast_with_tag(clock, common_state.world, &vec![], MessageTag::EnterRequest as i32);
             }
             AgentState::Down => {
                 clock.write().unwrap().inc();
@@ -104,13 +115,14 @@ pub fn main_loop(
             }
             AgentState::Up => {
                 logger.log("Going up".to_string());
-                comm::broadcast_with_tag(clock, world, &msg, MessageTag::Resources as i32);
+                comm::broadcast_with_tag(clock, common_state.world, &msg, MessageTag::Resources as i32);
             }
             AgentState::Rest => {
                 clock.write().unwrap().inc();
                 logger.log("Going to rest".to_string());
             }
         }
+        agent.run();
         agent.state = next_state;
         std::thread::sleep(std::time::Duration::from_secs(secs));
     }

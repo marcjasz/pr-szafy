@@ -19,6 +19,22 @@ pub enum MessageTag {
     LeaveRequest = 3,
 }
 
+pub struct CommonState<'world_lifetime> {
+    world: &'world_lifetime mpi::topology::SystemCommunicator,
+    rooms_count: u8,
+    _lifts_count: u8,
+}
+
+impl<'world_lifetime> CommonState<'world_lifetime> {
+    fn new(world: &'world_lifetime mpi::topology::SystemCommunicator, rooms_count: u8, _lifts_count: u8) -> Self {
+        Self {
+            world,
+            rooms_count,
+            _lifts_count,
+        }
+    }
+}
+
 // mpirun -n 4 target/debug/pr-szafy
 
 fn check_threading_support(threading: mpi::Threading){
@@ -33,12 +49,12 @@ fn init_mpi() -> mpi::environment::Universe {
 }
 
 fn main() {
-    let rooms_count = 5;
-    let lifts_count = 3;
     let universe_main = Arc::new(init_mpi());
+    let world = universe_main.world();
     let universe_comm = Arc::clone(&universe_main);
     let clock_main = Arc::new(RwLock::new(comm::Clock::new()));
     let clock_comm = clock_main.clone();
+    let common_state = CommonState::new(&world, 5, 3);
     let comm_handle = thread::spawn(move || {
         let world = universe_comm.world();
         let rank = world.rank();
@@ -52,6 +68,6 @@ fn main() {
             );
         }
     });
-    agent::main_loop(&clock_main, &universe_main.world(), rooms_count, lifts_count);
+    agent::main_loop(&clock_main, &common_state);
     comm_handle.join().unwrap();
 }

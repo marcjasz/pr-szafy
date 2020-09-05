@@ -2,8 +2,8 @@ use ansi_term::Colour::Fixed;
 use std::sync::RwLock;
 use crate::comm;
 
-pub struct Logger<'a> {
-    clock: &'a RwLock<comm::Clock>,
+pub struct Logger<'clock_lifetime> {
+    clock: &'clock_lifetime RwLock<comm::Clock>,
     rank: i32
 }
 
