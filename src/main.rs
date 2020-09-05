@@ -21,14 +21,21 @@ pub enum MessageTag {
 
 pub struct CommonState<'world_lifetime> {
     world: &'world_lifetime mpi::topology::SystemCommunicator,
+    clock: &'world_lifetime RwLock<comm::Clock>,
     rooms_count: u8,
     _lifts_count: u8,
 }
 
 impl<'world_lifetime> CommonState<'world_lifetime> {
-    fn new(world: &'world_lifetime mpi::topology::SystemCommunicator, rooms_count: u8, _lifts_count: u8) -> Self {
+    fn new(
+        world: &'world_lifetime mpi::topology::SystemCommunicator, 
+        clock: &'world_lifetime RwLock<comm::Clock>, 
+        rooms_count: u8, 
+        _lifts_count: u8
+    ) -> Self {
         Self {
             world,
+            clock,
             rooms_count,
             _lifts_count,
         }
@@ -54,7 +61,7 @@ fn main() {
     let universe_comm = Arc::clone(&universe_main);
     let clock_main = Arc::new(RwLock::new(comm::Clock::new()));
     let clock_comm = clock_main.clone();
-    let common_state = CommonState::new(&world, 5, 3);
+    let common_state = CommonState::new(&world, &clock_main, 5, 3);
     let comm_handle = thread::spawn(move || {
         let world = universe_comm.world();
         let rank = world.rank();
@@ -68,6 +75,6 @@ fn main() {
             );
         }
     });
-    agent::main_loop(&clock_main, &common_state);
+    agent::main_loop(&common_state);
     comm_handle.join().unwrap();
 }
