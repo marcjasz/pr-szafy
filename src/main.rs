@@ -1,12 +1,13 @@
 #![deny(warnings)]
 extern crate mpi;
+extern crate ctrlc;
 
 use mpi::{
     Threading,
     traits::*
 };
-use std::sync::Arc;
-use std::sync::RwLock;
+use std::sync::{Arc, RwLock};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use mpi::point_to_point as p2p;
 mod comm;
@@ -14,9 +15,10 @@ mod agent;
 mod util;
 
 pub enum MessageTag {
-    Resources = 1,
-    EnterRequest = 2,
-    LeaveRequest = 3,
+    Resources,
+    EnterRequest,
+    LeaveRequest,
+    Finish,
 }
 
 pub struct CommonState<'world_lifetime> {
@@ -62,6 +64,16 @@ fn main() {
     let clock_main = Arc::new(RwLock::new(comm::Clock::new()));
     let clock_comm = clock_main.clone();
     let common_state = CommonState::new(&world, &clock_main, 5, 3);
+    let is_alive = Arc::new(AtomicBool::new(true));
+    let is_alive_ctrlc = is_alive.clone();
+    let clock_ctrlc = clock_main.clone();
+    let world_ctrlc = universe_main.clone().world();
+
+    ctrlc::set_handler(move || {
+        is_alive_ctrlc.store(false, Ordering::SeqCst);
+        comm::broadcast_with_tag(&clock_ctrlc, &world_ctrlc, &vec![], MessageTag::Finish as i32);
+    }).expect("Error while setting Ctrl-C handler");
+
     let comm_handle = thread::spawn(move || {
         let world = universe_comm.world();
         let rank = world.rank();
@@ -73,8 +85,12 @@ fn main() {
                 "Got message {:?}. Status is: {:?}",
                 message, status)
             );
+
+            if status.tag() == MessageTag::Finish as i32 { break; }
         }
+        logger.log("Exiting".to_string());
     });
-    agent::main_loop(&common_state);
+    
+    agent::main_loop(&common_state, &is_alive);
     comm_handle.join().unwrap();
 }

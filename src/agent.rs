@@ -6,6 +6,7 @@ use crate::CommonState;
 use crate::util;
 use rand::Rng;
 use std::convert::TryInto;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 #[derive(Clone)]
 struct Agent<'world_lifetime> {
@@ -34,7 +35,7 @@ enum AgentState {
 
 impl<'world_lifetime> Agent<'world_lifetime> {
     fn new(rank: i32, need: u8, common_state: &'world_lifetime CommonState) -> Self {
-        Agent {
+        Self {
             need: need,
             rank: rank,
             state: AgentState::Rest,
@@ -102,11 +103,12 @@ impl<'world_lifetime> Agent<'world_lifetime> {
 
 pub fn main_loop(
     common_state: &CommonState,
+    is_alive: &AtomicBool,
 ) {
     let rank = common_state.world.rank();
     let mut rng = rand::thread_rng();
     let mut agent = Agent::new(rank, rng.gen_range(1, common_state.rooms_count), common_state);
-    loop {
+    while is_alive.load(Ordering::SeqCst) {
         common_state.clock.write().unwrap().inc();
         agent.run();
         agent.state = agent.next_state();
