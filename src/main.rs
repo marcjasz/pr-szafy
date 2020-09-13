@@ -1,17 +1,14 @@
 #![deny(warnings)]
-extern crate mpi;
 extern crate ctrlc;
+extern crate mpi;
 
-use mpi::{
-    Threading,
-    traits::*
-};
-use std::sync::{Arc, RwLock};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::thread;
 use mpi::point_to_point as p2p;
-mod comm;
+use mpi::{traits::*, Threading};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, RwLock};
+use std::thread;
 mod agent;
+mod comm;
 mod util;
 
 pub enum MessageTag {
@@ -31,10 +28,10 @@ pub struct CommonState<'world_lifetime> {
 
 impl<'world_lifetime> CommonState<'world_lifetime> {
     fn new(
-        world: &'world_lifetime mpi::topology::SystemCommunicator, 
-        clock: &'world_lifetime RwLock<comm::Clock>, 
-        rooms_count: u8, 
-        _lifts_count: u8
+        world: &'world_lifetime mpi::topology::SystemCommunicator,
+        clock: &'world_lifetime RwLock<comm::Clock>,
+        rooms_count: u8,
+        _lifts_count: u8,
     ) -> Self {
         Self {
             world,
@@ -47,7 +44,7 @@ impl<'world_lifetime> CommonState<'world_lifetime> {
 
 // mpirun -n 4 target/debug/pr-szafy
 
-fn check_threading_support(threading: mpi::Threading){
+fn check_threading_support(threading: mpi::Threading) {
     println!("Supported level of threading: {:?}", threading);
     assert_eq!(threading, mpi::environment::threading_support());
 }
@@ -69,8 +66,14 @@ fn main() {
     let world_ctrlc = world.clone();
     ctrlc::set_handler(move || {
         is_alive_ctrlc.store(false, Ordering::SeqCst);
-        comm::broadcast_with_tag(&clock_ctrlc, &world_ctrlc, &vec![], MessageTag::Finish as i32);
-    }).expect("Error while setting Ctrl-C handler");
+        comm::broadcast_with_tag(
+            &clock_ctrlc,
+            &world_ctrlc,
+            &vec![],
+            MessageTag::Finish as i32,
+        );
+    })
+    .expect("Error while setting Ctrl-C handler");
 
     let world_comm = world.clone();
     let clock_comm = clock.clone();
@@ -78,14 +81,17 @@ fn main() {
         let rank = world_comm.rank();
         let logger = util::Logger::new(&clock_comm, rank);
         loop {
-            let (message, status): (Vec<u16>, p2p::Status) = comm::receive(&clock_comm, &world_comm);
+            let (message, status): (Vec<u16>, p2p::Status) =
+                comm::receive(&clock_comm, &world_comm);
 
             logger.log(format!(
                 "Got message {:?}. Status is: {:?}",
-                message, status)
-            );
+                message, status
+            ));
 
-            if status.tag() == MessageTag::Finish as i32 { break; }
+            if status.tag() == MessageTag::Finish as i32 {
+                break;
+            }
         }
         logger.log("Exiting".to_string());
     });

@@ -1,19 +1,16 @@
+use crate::comm;
 use ansi_term::Colour::Fixed;
 use std::sync::RwLock;
-use crate::comm;
 
 #[derive(Clone)]
 pub struct Logger<'clock_lifetime> {
     clock: &'clock_lifetime RwLock<comm::Clock>,
-    rank: i32
+    rank: i32,
 }
 
 impl<'clock_lifetime> Logger<'clock_lifetime> {
     pub fn new(clock: &'clock_lifetime RwLock<comm::Clock>, rank: i32) -> Self {
-        Self {
-            clock,
-            rank,
-        }
+        Self { clock, rank }
     }
 
     pub fn log(&self, msg: String) -> () {

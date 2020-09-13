@@ -1,13 +1,13 @@
 #![allow(dead_code)]
-use mpi::traits::*;
 use crate::comm;
-use crate::MessageTag;
-use crate::CommonState;
 use crate::util;
+use crate::CommonState;
+use crate::MessageTag;
+use mpi::traits::*;
 use rand::Rng;
 use std::convert::TryInto;
-use std::sync::{RwLock};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::RwLock;
 
 #[derive(Clone)]
 struct Agent<'world_lifetime> {
@@ -23,7 +23,7 @@ struct Agent<'world_lifetime> {
     common_state: &'world_lifetime CommonState<'world_lifetime>,
     logger: util::Logger<'world_lifetime>,
 }
- 
+
 #[derive(Clone, Debug)]
 enum AgentState {
     Rest,
@@ -31,7 +31,7 @@ enum AgentState {
     Down,
     Crit,
     Leaving,
-    Up
+    Up,
 }
 
 impl<'world_lifetime> Agent<'world_lifetime> {
@@ -50,7 +50,7 @@ impl<'world_lifetime> Agent<'world_lifetime> {
             logger: util::Logger::new(common_state.clock, rank),
         }
     }
-    
+
     fn next_state(&mut self) {
         let new_state = match self.state {
             AgentState::Rest => AgentState::Try,
@@ -67,20 +67,26 @@ impl<'world_lifetime> Agent<'world_lifetime> {
         match self.state {
             AgentState::Try => {
                 self.logger.log("Trying to go down".to_string());
-                comm::broadcast_with_tag(self.common_state.clock, self.common_state.world, &vec![], MessageTag::EnterRequest as i32);
-                self.rooms = self.rooms
+                comm::broadcast_with_tag(
+                    self.common_state.clock,
+                    self.common_state.world,
+                    &vec![],
+                    MessageTag::EnterRequest as i32,
+                );
+                self.rooms = self
+                    .rooms
                     .iter()
                     .enumerate()
-                    .map(|(index, _value)| 
+                    .map(|(index, _value)| {
                         if index == self.rank as usize {
                             self.need
                         } else {
                             self.common_state.rooms_count
                         }
-                    )
+                    })
                     .collect();
                 self.lifts = vec![1; self.common_state.world.size() as usize];
-            },
+            }
             AgentState::Down => {
                 self.logger.log("Going down".to_string());
             }
@@ -93,23 +99,28 @@ impl<'world_lifetime> Agent<'world_lifetime> {
             AgentState::Up => {
                 self.logger.log("Going up".to_string());
                 let msg: Vec<u16> = vec![1, self.rank.try_into().unwrap()];
-                comm::broadcast_with_tag(self.common_state.clock, self.common_state.world, &msg, MessageTag::Resources as i32);
+                comm::broadcast_with_tag(
+                    self.common_state.clock,
+                    self.common_state.world,
+                    &msg,
+                    MessageTag::Resources as i32,
+                );
             }
             AgentState::Rest => {
                 self.logger.log("Going to rest".to_string());
             }
         }
-
     }
 }
 
-pub fn main_loop(
-    common_state: &CommonState,
-    is_alive: &AtomicBool,
-) {
+pub fn main_loop(common_state: &CommonState, is_alive: &AtomicBool) {
     let rank = common_state.world.rank();
     let mut rng = rand::thread_rng();
-    let agent = Agent::new(rank, rng.gen_range(1, common_state.rooms_count), common_state);
+    let agent = Agent::new(
+        rank,
+        rng.gen_range(1, common_state.rooms_count),
+        common_state,
+    );
     let agent_main = RwLock::new(agent);
 
     while is_alive.load(Ordering::SeqCst) {
