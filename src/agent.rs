@@ -6,6 +6,7 @@ use crate::CommonState;
 use crate::util;
 use rand::Rng;
 use std::convert::TryInto;
+use std::sync::{RwLock};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 #[derive(Clone)]
@@ -50,15 +51,16 @@ impl<'world_lifetime> Agent<'world_lifetime> {
         }
     }
     
-    fn next_state(&self) -> AgentState {
-        match self.state {
+    fn next_state(&mut self) {
+        let new_state = match self.state {
             AgentState::Rest => AgentState::Try,
             AgentState::Try => AgentState::Down,
             AgentState::Down => AgentState::Crit,
             AgentState::Crit => AgentState::Leaving,
             AgentState::Leaving => AgentState::Up,
             AgentState::Up => AgentState::Rest,
-        }
+        };
+        self.state = new_state;
     }
 
     fn run(&mut self) {
@@ -107,11 +109,13 @@ pub fn main_loop(
 ) {
     let rank = common_state.world.rank();
     let mut rng = rand::thread_rng();
-    let mut agent = Agent::new(rank, rng.gen_range(1, common_state.rooms_count), common_state);
+    let agent = Agent::new(rank, rng.gen_range(1, common_state.rooms_count), common_state);
+    let agent_main = RwLock::new(agent);
+
     while is_alive.load(Ordering::SeqCst) {
         common_state.clock.write().unwrap().inc();
-        agent.run();
-        agent.state = agent.next_state();
+        agent_main.write().unwrap().run();
+        agent_main.write().unwrap().next_state();
         let secs = rng.gen_range(1, 8);
         std::thread::sleep(std::time::Duration::from_secs(secs));
     }

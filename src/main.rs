@@ -21,6 +21,7 @@ pub enum MessageTag {
     Finish,
 }
 
+#[derive(Clone)]
 pub struct CommonState<'world_lifetime> {
     world: &'world_lifetime mpi::topology::SystemCommunicator,
     clock: &'world_lifetime RwLock<comm::Clock>,
@@ -58,28 +59,26 @@ fn init_mpi() -> mpi::environment::Universe {
 }
 
 fn main() {
-    let universe_main = Arc::new(init_mpi());
-    let world = universe_main.world();
-    let universe_comm = Arc::clone(&universe_main);
-    let clock_main = Arc::new(RwLock::new(comm::Clock::new()));
-    let clock_comm = clock_main.clone();
-    let common_state = CommonState::new(&world, &clock_main, 5, 3);
+    let universe = init_mpi();
+    let world = Arc::new(universe.world());
+    let clock = Arc::new(RwLock::new(comm::Clock::new()));
     let is_alive = Arc::new(AtomicBool::new(true));
-    let is_alive_ctrlc = is_alive.clone();
-    let clock_ctrlc = clock_main.clone();
-    let world_ctrlc = universe_main.clone().world();
 
+    let is_alive_ctrlc = is_alive.clone();
+    let clock_ctrlc = clock.clone();
+    let world_ctrlc = world.clone();
     ctrlc::set_handler(move || {
         is_alive_ctrlc.store(false, Ordering::SeqCst);
         comm::broadcast_with_tag(&clock_ctrlc, &world_ctrlc, &vec![], MessageTag::Finish as i32);
     }).expect("Error while setting Ctrl-C handler");
 
+    let world_comm = world.clone();
+    let clock_comm = clock.clone();
     let comm_handle = thread::spawn(move || {
-        let world = universe_comm.world();
-        let rank = world.rank();
+        let rank = world_comm.rank();
         let logger = util::Logger::new(&clock_comm, rank);
         loop {
-            let (message, status): (Vec<u16>, p2p::Status) = comm::receive(&clock_comm, &world);
+            let (message, status): (Vec<u16>, p2p::Status) = comm::receive(&clock_comm, &world_comm);
 
             logger.log(format!(
                 "Got message {:?}. Status is: {:?}",
@@ -90,7 +89,11 @@ fn main() {
         }
         logger.log("Exiting".to_string());
     });
-    
-    agent::main_loop(&common_state, &is_alive);
+
+    let agent_handle = thread::spawn(move || {
+        let common_state = CommonState::new(&world, &clock, 5, 3);
+        agent::main_loop(&common_state, &is_alive);
+    });
     comm_handle.join().unwrap();
+    agent_handle.join().unwrap();
 }

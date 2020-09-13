@@ -31,10 +31,8 @@ pub fn broadcast_with_tag(
     message: &Vec<u16>, tag: i32
 ) {
     let mut timestamped_message = message.clone();
-    {
-        let time = clock.write().unwrap().inc();
-        timestamped_message.push(time);
-    }
+    let time = clock.write().unwrap().inc();
+    timestamped_message.push(time);
     for i in 0..world.size() {
         world.process_at_rank(i).send_with_tag(&timestamped_message[..], tag);
     }
@@ -45,9 +43,7 @@ pub fn receive(
     world: &mpi::topology::SystemCommunicator
 ) -> (Vec<u16>, p2p::Status) {
     let (mut message, status) = world.any_process().receive_vec::<u16>();
-    {
-        clock.write().unwrap().inc_compare(message.pop().unwrap_or(0));
-    }
+    clock.write().unwrap().inc_compare(message.pop().unwrap_or(0));
     return (message, status)
 }
 

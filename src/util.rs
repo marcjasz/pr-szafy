@@ -8,11 +8,11 @@ pub struct Logger<'clock_lifetime> {
     rank: i32
 }
 
-impl Logger<'_> {
-    pub fn new(clock: &RwLock<comm::Clock>, rank: i32) -> Self {
+impl<'clock_lifetime> Logger<'clock_lifetime> {
+    pub fn new(clock: &'clock_lifetime RwLock<comm::Clock>, rank: i32) -> Self {
         Self {
-            clock: clock,
-            rank: rank
+            clock,
+            rank,
         }
     }
 
