@@ -5,7 +5,6 @@ use crate::CommonState;
 use crate::MessageTag;
 use mpi::traits::*;
 use rand::Rng;
-use std::convert::TryInto;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::RwLock;
 
@@ -13,8 +12,8 @@ use std::sync::RwLock;
 pub struct Agent {
     need: u8,
     rank: i32,
-    enter_time: i16,
-    leave_time: i16,
+    enter_time: u16,
+    leave_time: u16,
     rooms: Vec<u8>,
     lifts: Vec<u8>,
     defer_rooms: Vec<u8>,
@@ -39,8 +38,8 @@ impl Agent {
             need,
             rank,
             state: AgentState::Rest,
-            enter_time: i16::MIN,
-            leave_time: i16::MIN,
+            enter_time: u16::MAX,
+            leave_time: u16::MAX,
             rooms: vec![0; common_state.world_size],
             lifts: vec![0; common_state.world_size],
             defer_rooms: Vec::new(),
@@ -70,12 +69,10 @@ impl Agent {
         match self.state {
             AgentState::Try => {
                 logger.log("Trying to go down".to_string());
-                comm::broadcast_with_tag(clock, world, &vec![], MessageTag::EnterRequest as i32);
-                self.rooms = self
-                    .rooms
-                    .iter()
-                    .enumerate()
-                    .map(|(index, _value)| {
+                self.enter_time = clock.read().unwrap().time;
+                comm::broadcast_with_time(clock, world, &vec![], MessageTag::EnterRequest as i32);
+                self.rooms = (0..self.common_state.world_size)
+                    .map(|index| {
                         if index == self.rank as usize {
                             self.need
                         } else {
@@ -96,13 +93,45 @@ impl Agent {
             }
             AgentState::Up => {
                 logger.log("Going up".to_string());
-                let msg: Vec<u16> = vec![1, self.rank.try_into().unwrap()];
-                comm::broadcast_with_tag(clock, world, &msg, MessageTag::Resources as i32);
             }
             AgentState::Rest => {
                 logger.log("Going to rest".to_string());
             }
         }
+    }
+
+    pub fn handle_request(
+        &mut self,
+        clock: &RwLock<comm::Clock>,
+        world: &mpi::topology::SystemCommunicator,
+        logger: &util::Logger,
+        sender_rank: i32,
+        request_time: u16,
+    ) {
+        let message: Vec<u16>;
+        if matches!(self.state, AgentState::Rest) || self.enter_time > request_time {
+            message = vec![self.common_state.rooms_count as u16, 1];
+        } else if matches!(self.state, AgentState::Crit) {
+            message = vec![(self.common_state.rooms_count - self.need) as u16, 1];
+            self.defer_rooms.push(sender_rank as u8);
+        } else {
+            message = vec![(self.common_state.rooms_count - self.need) as u16, 0];
+            self.defer_rooms.push(sender_rank as u8);
+            self.defer_lifts.push(sender_rank as u8);
+        }
+        logger.log(format!(
+            "Received a resource request, granting {} rooms and {} lift to process #{}",
+            message[0],
+            if message[1] == 1 { "a" } else { "no" },
+            sender_rank
+        ));
+        comm::send_with_time(
+            clock,
+            world,
+            &message,
+            sender_rank,
+            MessageTag::Resources as i32,
+        );
     }
 }
 

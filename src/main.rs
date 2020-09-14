@@ -18,6 +18,18 @@ pub enum MessageTag {
     Finish,
 }
 
+impl MessageTag {
+    pub fn from_i32(int: i32) -> Self {
+        match int {
+            0 => MessageTag::Resources,
+            1 => MessageTag::EnterRequest,
+            2 => MessageTag::LeaveRequest,
+            3 => MessageTag::Finish,
+            _ => panic!("invalid message tag"),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct CommonState {
     rooms_count: u8,
@@ -54,7 +66,7 @@ fn handle_ctrlc(
     world: &mpi::topology::SystemCommunicator,
 ) {
     is_alive.store(false, Ordering::SeqCst);
-    comm::broadcast_with_tag(clock, world, &vec![], MessageTag::Finish as i32);
+    comm::broadcast_with_time(clock, world, &vec![], MessageTag::Finish as i32);
 }
 
 fn main() {
