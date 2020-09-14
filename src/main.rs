@@ -2,8 +2,8 @@
 extern crate ctrlc;
 extern crate mpi;
 
-use mpi::point_to_point as p2p;
 use mpi::{traits::*, Threading};
+use rand::Rng;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 use std::thread;
@@ -19,25 +19,18 @@ pub enum MessageTag {
 }
 
 #[derive(Clone)]
-pub struct CommonState<'world_lifetime> {
-    world: &'world_lifetime mpi::topology::SystemCommunicator,
-    clock: &'world_lifetime RwLock<comm::Clock>,
+pub struct CommonState {
     rooms_count: u8,
     _lifts_count: u8,
+    world_size: usize,
 }
 
-impl<'world_lifetime> CommonState<'world_lifetime> {
-    fn new(
-        world: &'world_lifetime mpi::topology::SystemCommunicator,
-        clock: &'world_lifetime RwLock<comm::Clock>,
-        rooms_count: u8,
-        _lifts_count: u8,
-    ) -> Self {
+impl CommonState {
+    fn new(rooms_count: u8, _lifts_count: u8, world_size: usize) -> Self {
         Self {
-            world,
-            clock,
             rooms_count,
             _lifts_count,
+            world_size,
         }
     }
 }
@@ -55,51 +48,47 @@ fn init_mpi() -> mpi::environment::Universe {
     universe
 }
 
+fn handle_ctrlc(
+    is_alive: &AtomicBool,
+    clock: &RwLock<comm::Clock>,
+    world: &mpi::topology::SystemCommunicator,
+) {
+    is_alive.store(false, Ordering::SeqCst);
+    comm::broadcast_with_tag(clock, world, &vec![], MessageTag::Finish as i32);
+}
+
 fn main() {
     let universe = init_mpi();
     let world = Arc::new(universe.world());
     let clock = Arc::new(RwLock::new(comm::Clock::new()));
     let is_alive = Arc::new(AtomicBool::new(true));
+    let rank = world.rank();
 
     let is_alive_ctrlc = is_alive.clone();
     let clock_ctrlc = clock.clone();
     let world_ctrlc = world.clone();
-    ctrlc::set_handler(move || {
-        is_alive_ctrlc.store(false, Ordering::SeqCst);
-        comm::broadcast_with_tag(
-            &clock_ctrlc,
-            &world_ctrlc,
-            &vec![],
-            MessageTag::Finish as i32,
-        );
-    })
-    .expect("Error while setting Ctrl-C handler");
+    ctrlc::set_handler(move || handle_ctrlc(&is_alive_ctrlc, &clock_ctrlc, &world_ctrlc))
+        .expect("Error while setting Ctrl-C handler");
+
+    let common_state = CommonState::new(5, 3, world.size() as usize);
+    let agent = Arc::new(RwLock::new(agent::Agent::new(
+        rank,
+        rand::thread_rng().gen_range(1, common_state.rooms_count),
+        common_state,
+    )));
+
+    let world_agent = world.clone();
+    let clock_agent = clock.clone();
+    let agent_main = agent.clone();
+    let agent_handle =
+        thread::spawn(move || agent::main_loop(&agent_main, &is_alive, &world_agent, &clock_agent));
 
     let world_comm = world.clone();
     let clock_comm = clock.clone();
-    let comm_handle = thread::spawn(move || {
-        let rank = world_comm.rank();
-        let logger = util::Logger::new(&clock_comm, rank);
-        loop {
-            let (message, status): (Vec<u16>, p2p::Status) =
-                comm::receive(&clock_comm, &world_comm);
+    let agent_comm = agent.clone();
+    let comm_handle =
+        thread::spawn(move || comm::receiver_loop(&agent_comm, &world_comm, &clock_comm));
 
-            logger.log(format!(
-                "Got message {:?}. Status is: {:?}",
-                message, status
-            ));
-
-            if status.tag() == MessageTag::Finish as i32 {
-                break;
-            }
-        }
-        logger.log("Exiting".to_string());
-    });
-
-    let agent_handle = thread::spawn(move || {
-        let common_state = CommonState::new(&world, &clock, 5, 3);
-        agent::main_loop(&common_state, &is_alive);
-    });
     comm_handle.join().unwrap();
     agent_handle.join().unwrap();
 }

@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::RwLock;
 
 #[derive(Clone)]
-struct Agent<'world_lifetime> {
+pub struct Agent {
     need: u8,
     rank: i32,
     enter_time: i16,
@@ -20,8 +20,7 @@ struct Agent<'world_lifetime> {
     defer_rooms: Vec<u8>,
     defer_lifts: Vec<u8>,
     state: AgentState,
-    common_state: &'world_lifetime CommonState<'world_lifetime>,
-    logger: util::Logger<'world_lifetime>,
+    common_state: CommonState,
 }
 
 #[derive(Clone, Debug)]
@@ -34,20 +33,19 @@ enum AgentState {
     Up,
 }
 
-impl<'world_lifetime> Agent<'world_lifetime> {
-    fn new(rank: i32, need: u8, common_state: &'world_lifetime CommonState) -> Self {
+impl Agent {
+    pub fn new(rank: i32, need: u8, common_state: CommonState) -> Self {
         Self {
-            need: need,
-            rank: rank,
+            need,
+            rank,
             state: AgentState::Rest,
             enter_time: i16::MIN,
             leave_time: i16::MIN,
-            rooms: vec![0; common_state.world.size() as usize],
-            lifts: vec![0; common_state.world.size() as usize],
+            rooms: vec![0; common_state.world_size],
+            lifts: vec![0; common_state.world_size],
             defer_rooms: Vec::new(),
             defer_lifts: Vec::new(),
-            common_state: common_state,
-            logger: util::Logger::new(common_state.clock, rank),
+            common_state,
         }
     }
 
@@ -63,16 +61,16 @@ impl<'world_lifetime> Agent<'world_lifetime> {
         self.state = new_state;
     }
 
-    fn run(&mut self) {
+    fn run(
+        &mut self,
+        clock: &RwLock<comm::Clock>,
+        world: &mpi::topology::SystemCommunicator,
+        logger: &util::Logger,
+    ) {
         match self.state {
             AgentState::Try => {
-                self.logger.log("Trying to go down".to_string());
-                comm::broadcast_with_tag(
-                    self.common_state.clock,
-                    self.common_state.world,
-                    &vec![],
-                    MessageTag::EnterRequest as i32,
-                );
+                logger.log("Trying to go down".to_string());
+                comm::broadcast_with_tag(clock, world, &vec![], MessageTag::EnterRequest as i32);
                 self.rooms = self
                     .rooms
                     .iter()
@@ -85,48 +83,41 @@ impl<'world_lifetime> Agent<'world_lifetime> {
                         }
                     })
                     .collect();
-                self.lifts = vec![1; self.common_state.world.size() as usize];
+                self.lifts = vec![1; self.common_state.world_size];
             }
             AgentState::Down => {
-                self.logger.log("Going down".to_string());
+                logger.log("Going down".to_string());
             }
             AgentState::Crit => {
-                self.logger.log("Entering the critical section".to_string());
+                logger.log("Entering the critical section".to_string());
             }
             AgentState::Leaving => {
-                self.logger.log("Leaving the critical section".to_string());
+                logger.log("Leaving the critical section".to_string());
             }
             AgentState::Up => {
-                self.logger.log("Going up".to_string());
+                logger.log("Going up".to_string());
                 let msg: Vec<u16> = vec![1, self.rank.try_into().unwrap()];
-                comm::broadcast_with_tag(
-                    self.common_state.clock,
-                    self.common_state.world,
-                    &msg,
-                    MessageTag::Resources as i32,
-                );
+                comm::broadcast_with_tag(clock, world, &msg, MessageTag::Resources as i32);
             }
             AgentState::Rest => {
-                self.logger.log("Going to rest".to_string());
+                logger.log("Going to rest".to_string());
             }
         }
     }
 }
 
-pub fn main_loop(common_state: &CommonState, is_alive: &AtomicBool) {
-    let rank = common_state.world.rank();
+pub fn main_loop<'world_lifetime>(
+    agent: &'world_lifetime RwLock<Agent>,
+    is_alive: &'world_lifetime AtomicBool,
+    world: &'world_lifetime mpi::topology::SystemCommunicator,
+    clock: &'world_lifetime RwLock<comm::Clock>,
+) {
+    let logger = util::Logger::new(clock, world.rank());
     let mut rng = rand::thread_rng();
-    let agent = Agent::new(
-        rank,
-        rng.gen_range(1, common_state.rooms_count),
-        common_state,
-    );
-    let agent_main = RwLock::new(agent);
-
     while is_alive.load(Ordering::SeqCst) {
-        common_state.clock.write().unwrap().inc();
-        agent_main.write().unwrap().run();
-        agent_main.write().unwrap().next_state();
+        clock.write().unwrap().inc();
+        agent.write().unwrap().run(clock, world, &logger);
+        agent.write().unwrap().next_state();
         let secs = rng.gen_range(1, 8);
         std::thread::sleep(std::time::Duration::from_secs(secs));
     }

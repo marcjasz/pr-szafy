@@ -1,3 +1,5 @@
+use crate::agent;
+use crate::util;
 use mpi::point_to_point as p2p;
 use mpi::traits::*;
 use std::sync::RwLock;
@@ -49,4 +51,25 @@ pub fn receive(
         .unwrap()
         .inc_compare(message.pop().unwrap_or(0));
     return (message, status);
+}
+
+pub fn receiver_loop(
+    _agent: &RwLock<agent::Agent>,
+    world: &mpi::topology::SystemCommunicator,
+    clock: &RwLock<Clock>,
+) {
+    let logger = util::Logger::new(&clock, world.rank());
+    loop {
+        let (message, status): (Vec<u16>, p2p::Status) = receive(&clock, &world);
+
+        logger.log(format!(
+            "Got message {:?}. Status is: {:?}",
+            message, status
+        ));
+
+        if status.tag() == crate::MessageTag::Finish as i32 {
+            break;
+        }
+    }
+    logger.log("Exiting".to_string());
 }
