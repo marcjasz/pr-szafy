@@ -62,14 +62,14 @@ impl Agent {
 
     fn run(
         &mut self,
-        clock: &RwLock<comm::Clock>,
+        clock: &comm::Clock,
         world: &mpi::topology::SystemCommunicator,
         logger: &util::Logger,
     ) {
         match self.state {
             AgentState::Try => {
                 logger.log("Trying to go down".to_string());
-                self.enter_time = clock.read().unwrap().time;
+                self.enter_time = clock.time();
                 comm::broadcast_with_time(clock, world, &vec![], MessageTag::EnterRequest as i32);
                 self.rooms = (0..self.common_state.world_size)
                     .map(|index| {
@@ -102,7 +102,7 @@ impl Agent {
 
     pub fn handle_request(
         &mut self,
-        clock: &RwLock<comm::Clock>,
+        clock: &comm::Clock,
         world: &mpi::topology::SystemCommunicator,
         logger: &util::Logger,
         sender_rank: i32,
@@ -139,12 +139,12 @@ pub fn main_loop<'world_lifetime>(
     agent: &'world_lifetime RwLock<Agent>,
     is_alive: &'world_lifetime AtomicBool,
     world: &'world_lifetime mpi::topology::SystemCommunicator,
-    clock: &'world_lifetime RwLock<comm::Clock>,
+    clock: &'world_lifetime comm::Clock,
 ) {
     let logger = util::Logger::new(clock, world.rank());
     let mut rng = rand::thread_rng();
     while is_alive.load(Ordering::SeqCst) {
-        clock.write().unwrap().inc();
+        clock.inc();
         agent.write().unwrap().run(clock, world, &logger);
         agent.write().unwrap().next_state();
         let secs = rng.gen_range(1, 8);

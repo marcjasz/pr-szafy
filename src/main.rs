@@ -62,7 +62,7 @@ fn init_mpi() -> mpi::environment::Universe {
 
 fn handle_ctrlc(
     is_alive: &AtomicBool,
-    clock: &RwLock<comm::Clock>,
+    clock: &comm::Clock,
     world: &mpi::topology::SystemCommunicator,
 ) {
     is_alive.store(false, Ordering::SeqCst);
@@ -72,7 +72,7 @@ fn handle_ctrlc(
 fn main() {
     let universe = init_mpi();
     let world = Arc::new(universe.world());
-    let clock = Arc::new(RwLock::new(comm::Clock::new()));
+    let clock = Arc::new(comm::Clock::new());
     let is_alive = Arc::new(AtomicBool::new(true));
     let rank = world.rank();
 
