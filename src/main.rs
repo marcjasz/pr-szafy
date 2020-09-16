@@ -81,7 +81,7 @@ fn main() {
     ctrlc::set_handler(move || handle_ctrlc(&is_alive_ctrlc, &world_ctrlc))
         .expect("Error while setting Ctrl-C handler");
 
-    let common_state = CommonState::new(3, 1, world.size() as usize);
+    let common_state = CommonState::new(7, 3, world.size() as usize);
     let agent = Arc::new(agent::Agent::new(
         rank,
         rand::thread_rng().gen_range(1, common_state.rooms_count),
@@ -90,10 +90,16 @@ fn main() {
     ));
 
     let agent_main = agent.clone();
-    let agent_handle = thread::spawn(move || agent::main_loop(&agent_main, &is_alive));
+    let agent_handle = thread::Builder::new()
+        .name(format!("agent-{}", rank))
+        .spawn(move || agent::main_loop(&agent_main, &is_alive))
+        .unwrap();
 
     let agent_comm = agent.clone();
-    let comm_handle = thread::spawn(move || comm::receiver_loop(&agent_comm));
+    let comm_handle = thread::Builder::new()
+        .name(format!("comm-{}", rank))
+        .spawn(move || comm::receiver_loop(&agent_comm))
+        .unwrap();
 
     comm_handle.join().unwrap();
     agent_handle.join().unwrap();

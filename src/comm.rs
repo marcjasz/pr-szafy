@@ -1,4 +1,5 @@
 use crate::agent;
+use crate::util;
 use crate::MessageTag;
 use mpi::point_to_point as p2p;
 use mpi::traits::*;
@@ -68,6 +69,7 @@ impl<'a> TimestampedCommunicator<'a> {
 
     pub fn receive(&self) -> (Vec<u16>, p2p::Status) {
         let (message, status) = self.world.any_process().receive_vec::<u16>();
+        util::sleep_random();
         self.clock.inc_compare(message.last().copied().unwrap_or(0));
         return (message, status);
     }
