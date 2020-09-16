@@ -33,15 +33,15 @@ impl MessageTag {
 #[derive(Clone)]
 pub struct CommonState {
     rooms_count: u8,
-    _lifts_count: u8,
+    lifts_count: u8,
     world_size: usize,
 }
 
 impl CommonState {
-    fn new(rooms_count: u8, _lifts_count: u8, world_size: usize) -> Self {
+    fn new(rooms_count: u8, lifts_count: u8, world_size: usize) -> Self {
         Self {
             rooms_count,
-            _lifts_count,
+            lifts_count,
             world_size,
         }
     }
@@ -81,7 +81,7 @@ fn main() {
     ctrlc::set_handler(move || handle_ctrlc(&is_alive_ctrlc, &world_ctrlc))
         .expect("Error while setting Ctrl-C handler");
 
-    let common_state = CommonState::new(5, 3, world.size() as usize);
+    let common_state = CommonState::new(3, 1, world.size() as usize);
     let agent = Arc::new(agent::Agent::new(
         rank,
         rand::thread_rng().gen_range(1, common_state.rooms_count),

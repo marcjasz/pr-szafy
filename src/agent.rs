@@ -71,6 +71,43 @@ impl Agent {
         *self.enter_time.write().unwrap() = self.clock.time();
     }
 
+    fn leave_time(&self) -> u16 {
+        *self.leave_time.read().unwrap()
+    }
+
+    fn set_leave_time(&self) {
+        *self.leave_time.write().unwrap() = self.clock.time();
+    }
+
+    fn rooms_at_rank(&self, rank: i32) -> u8 {
+        self.rooms.read().unwrap()[rank as usize]
+    }
+
+    fn set_rooms_at_rank(&self, rank: i32, rooms: u8) {
+        self.rooms.write().unwrap()[rank as usize] = rooms;
+    }
+
+    fn taken_rooms_count(&self) -> u8 {
+        self.rooms.read().unwrap().iter().sum()
+    }
+
+    fn lifts_at_rank(&self, rank: i32) -> u8 {
+        self.lifts.read().unwrap()[rank as usize]
+    }
+
+    fn set_lifts_at_rank(&self, rank: i32, lifts: u8) {
+        self.lifts.write().unwrap()[rank as usize] = lifts;
+    }
+
+    fn taken_lifts_count(&self) -> u8 {
+        self.lifts.read().unwrap().iter().sum()
+    }
+
+    fn higher_priority(&self, sender_time: u16, sender_rank: i32) -> bool {
+        (self.enter_time() > sender_time)
+            || (self.enter_time() == sender_time && self.rank > sender_rank)
+    }
+
     fn next_state(&self) {
         let new_state = match self.state() {
             AgentState::Rest => AgentState::Try,
@@ -88,11 +125,11 @@ impl Agent {
         let communicator = comm::TimestampedCommunicator::new(&self.clock, &self.world);
         let logger = util::Logger::new(&self.clock, self.rank);
         match self.state() {
-            AgentState::Try => {
+            AgentState::Rest => {
                 logger.log("Trying to go down".to_string());
                 self.set_enter_time();
                 communicator.broadcast_with_time(&vec![], MessageTag::EnterRequest as i32);
-                *self.rooms.write().unwrap() = (1..self.common_state.world_size)
+                *self.rooms.write().unwrap() = (0..self.common_state.world_size)
                     .map(|index| {
                         if index == self.rank as usize {
                             self.need
@@ -102,20 +139,26 @@ impl Agent {
                     })
                     .collect();
                 *self.lifts.write().unwrap() = vec![1; self.common_state.world_size];
+                self.next_state();
+            }
+            AgentState::Try => {
+                if self.taken_rooms_count() <= self.common_state.rooms_count
+                    && self.taken_lifts_count() <= self.common_state.lifts_count
+                {
+                    logger.log("Going down".to_string());
+                    self.next_state();
+                }
             }
             AgentState::Down => {
-                logger.log("Going down".to_string());
-            }
-            AgentState::Crit => {
                 logger.log("Entering the critical section".to_string());
             }
-            AgentState::Leaving => {
+            AgentState::Crit => {
                 logger.log("Leaving the critical section".to_string());
             }
-            AgentState::Up => {
+            AgentState::Leaving => {
                 logger.log("Going up".to_string());
             }
-            AgentState::Rest => {
+            AgentState::Up => {
                 logger.log("Going to rest".to_string());
             }
         }
@@ -125,11 +168,13 @@ impl Agent {
         comm::TimestampedCommunicator::new(&self.clock, &self.world).receive()
     }
 
-    pub fn handle_request(&self, sender_rank: i32, request_time: u16) {
+    pub fn handle_enter_request(&self, sender_rank: i32, request_time: u16) {
         let communicator = comm::TimestampedCommunicator::new(&self.clock, &self.world);
         let logger = util::Logger::new(&self.clock, self.rank);
         let message: Vec<u16>;
-        if matches!(self.state(), AgentState::Rest) || self.enter_time() > request_time {
+        if matches!(self.state(), AgentState::Rest)
+            || self.higher_priority(request_time, sender_rank)
+        {
             message = vec![self.common_state.rooms_count as u16, 1];
         } else if matches!(self.state(), AgentState::Crit) {
             message = vec![(self.common_state.rooms_count - self.need) as u16, 1];
@@ -148,6 +193,29 @@ impl Agent {
         communicator.send_with_time(&message, sender_rank, MessageTag::Resources as i32);
     }
 
+    pub fn handle_leave_request(&self, sender_rank: i32, request_time: u16) {
+        if matches!(self.state(), AgentState::Leaving | AgentState::Up)
+            && self.leave_time() < request_time
+        {
+            self.defer_lifts.write().unwrap().push(sender_rank as u8);
+        } else {
+            let message = vec![0, 1];
+            let communicator = comm::TimestampedCommunicator::new(&self.clock, &self.world);
+            communicator.send_with_time(&message, sender_rank, MessageTag::Resources as i32);
+        }
+    }
+
+    pub fn handle_resources(&self, sender_rank: i32, rooms: u16, lifts: u16) {
+        self.set_rooms_at_rank(sender_rank, self.rooms_at_rank(sender_rank) - rooms as u8);
+        self.set_lifts_at_rank(sender_rank, self.lifts_at_rank(sender_rank) - lifts as u8);
+        util::Logger::new(&self.clock, self.rank).log(format!(
+            "Received resource information: {} rooms and {} lifts taken by process #{}",
+            self.rooms_at_rank(sender_rank),
+            self.lifts_at_rank(sender_rank),
+            sender_rank,
+        ));
+    }
+
     pub fn finish(&self) {
         util::Logger::new(&self.clock, self.rank).log("Exiting".to_string());
     }
@@ -160,8 +228,7 @@ pub fn main_loop<'world_lifetime>(
     let mut rng = rand::thread_rng();
     while is_alive.load(Ordering::SeqCst) {
         agent.run();
-        agent.next_state();
-        let secs = rng.gen_range(1, 8);
+        let secs = rng.gen_range(3, 8);
         std::thread::sleep(std::time::Duration::from_secs(secs));
     }
 }

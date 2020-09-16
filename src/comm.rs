@@ -45,7 +45,7 @@ impl<'a> TimestampedCommunicator<'a> {
 
     pub fn send_with_time(&self, message: &Vec<u16>, receiver_rank: i32, tag: i32) {
         let mut timestamped_message = message.clone();
-        let time = self.clock.inc();
+        let time = self.clock.time();
         timestamped_message.push(time);
         self.world
             .process_at_rank(receiver_rank)
@@ -54,7 +54,7 @@ impl<'a> TimestampedCommunicator<'a> {
 
     pub fn broadcast_with_time(&self, message: &Vec<u16>, tag: i32) {
         let mut timestamped_message = message.clone();
-        let time = self.clock.inc();
+        let time = self.clock.time();
         timestamped_message.push(time);
         for i in 0..self.world.size() {
             if i == self.world.rank() {
@@ -79,14 +79,19 @@ pub fn receiver_loop(agent: &agent::Agent) {
         let message_timestamp = message.last().copied().unwrap_or(0);
 
         match MessageTag::from_i32(status.tag()) {
+            MessageTag::Resources => {
+                agent.handle_resources(status.source_rank(), message[0], message[1]);
+            }
             MessageTag::EnterRequest => {
-                agent.handle_request(status.source_rank() as i32, message_timestamp)
+                agent.handle_enter_request(status.source_rank(), message_timestamp)
+            }
+            MessageTag::LeaveRequest => {
+                agent.handle_leave_request(status.source_rank(), message_timestamp)
             }
             MessageTag::Finish => {
                 agent.finish();
                 break;
             }
-            _ => (),
         }
     }
 }
