@@ -1,5 +1,4 @@
 use crate::agent;
-use crate::util;
 use crate::MessageTag;
 use mpi::point_to_point as p2p;
 use mpi::traits::*;
@@ -33,75 +32,61 @@ impl Clock {
     }
 }
 
-pub fn send_with_time(
-    clock: &Clock,
-    world: &mpi::topology::SystemCommunicator,
-    message: &Vec<u16>,
-    receiver_rank: i32,
-    tag: i32,
-) {
-    let mut timestamped_message = message.clone();
-    let time = clock.inc();
-    timestamped_message.push(time);
-    world
-        .process_at_rank(receiver_rank)
-        .send_with_tag(&timestamped_message[..], tag);
+#[derive(Clone)]
+pub struct TimestampedCommunicator<'a> {
+    pub clock: &'a Clock,
+    world: &'a mpi::topology::SystemCommunicator,
 }
 
-pub fn broadcast_with_time(
-    clock: &Clock,
-    world: &mpi::topology::SystemCommunicator,
-    message: &Vec<u16>,
-    tag: i32,
-) {
-    let mut timestamped_message = message.clone();
-    let time = clock.inc();
-    timestamped_message.push(time);
-    for i in 0..world.size() {
-        if i == world.rank() {
-            continue;
-        }
-        world
-            .process_at_rank(i)
+impl<'a> TimestampedCommunicator<'a> {
+    pub fn new(clock: &'a Clock, world: &'a mpi::topology::SystemCommunicator) -> Self {
+        Self { clock, world }
+    }
+
+    pub fn send_with_time(&self, message: &Vec<u16>, receiver_rank: i32, tag: i32) {
+        let mut timestamped_message = message.clone();
+        let time = self.clock.inc();
+        timestamped_message.push(time);
+        self.world
+            .process_at_rank(receiver_rank)
             .send_with_tag(&timestamped_message[..], tag);
+    }
+
+    pub fn broadcast_with_time(&self, message: &Vec<u16>, tag: i32) {
+        let mut timestamped_message = message.clone();
+        let time = self.clock.inc();
+        timestamped_message.push(time);
+        for i in 0..self.world.size() {
+            if i == self.world.rank() {
+                continue;
+            }
+            self.world
+                .process_at_rank(i)
+                .send_with_tag(&timestamped_message[..], tag);
+        }
+    }
+
+    pub fn receive(&self) -> (Vec<u16>, p2p::Status) {
+        let (message, status) = self.world.any_process().receive_vec::<u16>();
+        self.clock.inc_compare(message.last().copied().unwrap_or(0));
+        return (message, status);
     }
 }
 
-pub fn receive(
-    clock: &Clock,
-    world: &mpi::topology::SystemCommunicator,
-) -> (Vec<u16>, p2p::Status) {
-    let (message, status) = world.any_process().receive_vec::<u16>();
-    clock.inc_compare(message.last().copied().unwrap_or(0));
-    return (message, status);
-}
-
-pub fn receiver_loop(
-    agent: &RwLock<agent::Agent>,
-    world: &mpi::topology::SystemCommunicator,
-    clock: &Clock,
-) {
-    let logger = util::Logger::new(&clock, world.rank());
+pub fn receiver_loop(agent: &agent::Agent) {
     loop {
-        let (message, status): (Vec<u16>, p2p::Status) = receive(&clock, &world);
+        let (message, status): (Vec<u16>, p2p::Status) = agent.receive_request();
         let message_timestamp = message.last().copied().unwrap_or(0);
 
-        logger.log(format!(
-            "Got message {:?}. Status is: {:?}",
-            message, status
-        ));
-
         match MessageTag::from_i32(status.tag()) {
-            MessageTag::EnterRequest => agent.write().unwrap().handle_request(
-                clock,
-                world,
-                &logger,
-                status.source_rank() as i32,
-                message_timestamp,
-            ),
-            MessageTag::Finish => break,
+            MessageTag::EnterRequest => {
+                agent.handle_request(status.source_rank() as i32, message_timestamp)
+            }
+            MessageTag::Finish => {
+                agent.finish();
+                break;
+            }
             _ => (),
         }
     }
-    logger.log("Exiting".to_string());
 }

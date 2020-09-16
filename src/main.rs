@@ -5,7 +5,7 @@ extern crate mpi;
 use mpi::{traits::*, Threading};
 use rand::Rng;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use std::thread;
 mod agent;
 mod comm;
@@ -60,46 +60,40 @@ fn init_mpi() -> mpi::environment::Universe {
     universe
 }
 
-fn handle_ctrlc(
-    is_alive: &AtomicBool,
-    clock: &comm::Clock,
-    world: &mpi::topology::SystemCommunicator,
-) {
+fn handle_ctrlc(is_alive: &AtomicBool, world: &mpi::topology::SystemCommunicator) {
     is_alive.store(false, Ordering::SeqCst);
-    comm::broadcast_with_time(clock, world, &vec![], MessageTag::Finish as i32);
+    let dummy_msg = vec![0];
+    for i in 0..world.size() {
+        world
+            .process_at_rank(i)
+            .send_with_tag(&dummy_msg[..], MessageTag::Finish as i32);
+    }
 }
 
 fn main() {
     let universe = init_mpi();
     let world = Arc::new(universe.world());
-    let clock = Arc::new(comm::Clock::new());
     let is_alive = Arc::new(AtomicBool::new(true));
     let rank = world.rank();
 
     let is_alive_ctrlc = is_alive.clone();
-    let clock_ctrlc = clock.clone();
     let world_ctrlc = world.clone();
-    ctrlc::set_handler(move || handle_ctrlc(&is_alive_ctrlc, &clock_ctrlc, &world_ctrlc))
+    ctrlc::set_handler(move || handle_ctrlc(&is_alive_ctrlc, &world_ctrlc))
         .expect("Error while setting Ctrl-C handler");
 
     let common_state = CommonState::new(5, 3, world.size() as usize);
-    let agent = Arc::new(RwLock::new(agent::Agent::new(
+    let agent = Arc::new(agent::Agent::new(
         rank,
         rand::thread_rng().gen_range(1, common_state.rooms_count),
         common_state,
-    )));
+        universe.world(),
+    ));
 
-    let world_agent = world.clone();
-    let clock_agent = clock.clone();
     let agent_main = agent.clone();
-    let agent_handle =
-        thread::spawn(move || agent::main_loop(&agent_main, &is_alive, &world_agent, &clock_agent));
+    let agent_handle = thread::spawn(move || agent::main_loop(&agent_main, &is_alive));
 
-    let world_comm = world.clone();
-    let clock_comm = clock.clone();
     let agent_comm = agent.clone();
-    let comm_handle =
-        thread::spawn(move || comm::receiver_loop(&agent_comm, &world_comm, &clock_comm));
+    let comm_handle = thread::spawn(move || comm::receiver_loop(&agent_comm));
 
     comm_handle.join().unwrap();
     agent_handle.join().unwrap();
