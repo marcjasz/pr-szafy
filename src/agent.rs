@@ -214,9 +214,7 @@ impl Agent {
                         .inspect(|(rank, message)| {
                             logger.log(format!(
                                 "Granting {} deferred rooms and {} lifts to process #{}",
-                                message.0,
-                                message.1,
-                                rank
+                                message.0, message.1, rank
                             ))
                         })
                         .for_each(|(rank, message)| {

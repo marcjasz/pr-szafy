@@ -73,13 +73,13 @@ fn handle_ctrlc(is_alive: &AtomicBool, world: &mpi::topology::SystemCommunicator
 
 fn main() {
     let args: Vec<String> = env::args().collect();
-    let rooms_count: u8 ;
-    let lifts_count: u8 ;
+    let rooms_count: u8;
+    let lifts_count: u8;
     match args.len() {
         3 => {
             rooms_count = args[1].parse().unwrap();
             lifts_count = args[2].parse().unwrap();
-        } 
+        }
         _ => {
             panic!("two program arguments required (unsigned integers)");
         }
