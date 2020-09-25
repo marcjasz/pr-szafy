@@ -4,6 +4,7 @@ extern crate mpi;
 
 use mpi::{traits::*, Threading};
 use rand::Rng;
+use std::env;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
@@ -16,6 +17,7 @@ pub enum MessageTag {
     EnterRequest,
     LeaveRequest,
     Finish,
+    LeaveResources,
 }
 
 impl MessageTag {
@@ -25,19 +27,20 @@ impl MessageTag {
             1 => MessageTag::EnterRequest,
             2 => MessageTag::LeaveRequest,
             3 => MessageTag::Finish,
+            4 => MessageTag::LeaveResources,
             _ => panic!("invalid message tag"),
         }
     }
 }
 
 #[derive(Clone)]
-pub struct CommonState {
+pub struct Config {
     rooms_count: u8,
     lifts_count: u8,
     world_size: usize,
 }
 
-impl CommonState {
+impl Config {
     fn new(rooms_count: u8, lifts_count: u8, world_size: usize) -> Self {
         Self {
             rooms_count,
@@ -46,8 +49,6 @@ impl CommonState {
         }
     }
 }
-
-// mpirun -n 4 target/debug/pr-szafy
 
 fn check_threading_support(threading: mpi::Threading) {
     println!("Supported level of threading: {:?}", threading);
@@ -71,30 +72,47 @@ fn handle_ctrlc(is_alive: &AtomicBool, world: &mpi::topology::SystemCommunicator
 }
 
 fn main() {
+    let args: Vec<String> = env::args().collect();
+    let rooms_count: u8 ;
+    let lifts_count: u8 ;
+    match args.len() {
+        3 => {
+            rooms_count = args[1].parse().unwrap();
+            lifts_count = args[2].parse().unwrap();
+        } 
+        _ => {
+            panic!("two program arguments required (unsigned integers)");
+        }
+    }
+
     let universe = init_mpi();
     let world = Arc::new(universe.world());
     let is_alive = Arc::new(AtomicBool::new(true));
     let rank = world.rank();
 
+    // capture Ctrl-C and kill children gracefully
     let is_alive_ctrlc = is_alive.clone();
     let world_ctrlc = world.clone();
     ctrlc::set_handler(move || handle_ctrlc(&is_alive_ctrlc, &world_ctrlc))
         .expect("Error while setting Ctrl-C handler");
 
-    let common_state = CommonState::new(7, 3, world.size() as usize);
+    // set up problem instance
+    let config = Config::new(rooms_count, lifts_count, world.size() as usize);
     let agent = Arc::new(agent::Agent::new(
         rank,
-        rand::thread_rng().gen_range(1, common_state.rooms_count),
-        common_state,
+        rand::thread_rng().gen_range(1, config.rooms_count),
+        config,
         universe.world(),
     ));
 
+    // state machine thread
     let agent_main = agent.clone();
     let agent_handle = thread::Builder::new()
         .name(format!("agent-{}", rank))
         .spawn(move || agent::main_loop(&agent_main, &is_alive))
         .unwrap();
 
+    // message receiver thread
     let agent_comm = agent.clone();
     let comm_handle = thread::Builder::new()
         .name(format!("comm-{}", rank))

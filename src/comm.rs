@@ -24,7 +24,8 @@ impl Clock {
 
     pub fn inc_compare(&self, other_time: u16) -> u16 {
         let mut time = self.time.write().unwrap();
-        *time = std::cmp::max(*time, other_time) + 1;
+        *time = std::cmp::max(*time, other_time);
+        *time += 1;
         return *time;
     }
 
@@ -93,6 +94,9 @@ pub fn receiver_loop(agent: &agent::Agent) {
             MessageTag::Finish => {
                 agent.finish();
                 break;
+            }
+            MessageTag::LeaveResources => {
+                agent.handle_leave_resources(status.source_rank());
             }
         }
     }

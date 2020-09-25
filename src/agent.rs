@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 use crate::comm;
 use crate::util;
-use crate::CommonState;
+use crate::Config;
 use crate::MessageTag;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::RwLock;
@@ -16,7 +16,7 @@ pub struct Agent {
     defer_rooms: RwLock<Vec<u8>>,
     defer_lifts: RwLock<Vec<u8>>,
     state: RwLock<AgentState>,
-    common_state: CommonState,
+    config: Config,
     world: mpi::topology::SystemCommunicator,
     clock: comm::Clock,
 }
@@ -35,7 +35,7 @@ impl Agent {
     pub fn new(
         rank: i32,
         need: u8,
-        common_state: CommonState,
+        config: Config,
         world: mpi::topology::SystemCommunicator,
     ) -> Self {
         Self {
@@ -44,11 +44,11 @@ impl Agent {
             state: RwLock::new(AgentState::Rest),
             enter_time: RwLock::new(u16::MAX),
             leave_time: RwLock::new(u16::MAX),
-            rooms: RwLock::new(vec![0; common_state.world_size]),
-            lifts: RwLock::new(vec![0; common_state.world_size]),
+            rooms: RwLock::new(vec![0; config.world_size]),
+            lifts: RwLock::new(vec![0; config.world_size]),
             defer_rooms: RwLock::new(Vec::new()),
             defer_lifts: RwLock::new(Vec::new()),
-            common_state,
+            config,
             clock: comm::Clock::new(),
             world,
         }
@@ -59,7 +59,7 @@ impl Agent {
     }
 
     fn set_state(&self, state: AgentState) {
-        *self.state.write().unwrap() = state;
+        *self.state.write().unwrap() = state
     }
 
     fn enter_time(&self) -> u16 {
@@ -83,7 +83,7 @@ impl Agent {
     }
 
     fn set_rooms_at_rank(&self, rank: i32, rooms: u8) {
-        self.rooms.write().unwrap()[rank as usize] = rooms;
+        self.rooms.write().unwrap()[rank as usize] = rooms
     }
 
     fn taken_rooms_count(&self) -> u8 {
@@ -95,19 +95,23 @@ impl Agent {
     }
 
     fn set_lifts_at_rank(&self, rank: i32, lifts: u8) {
-        self.lifts.write().unwrap()[rank as usize] = lifts;
+        self.lifts.write().unwrap()[rank as usize] = lifts
     }
 
     fn taken_lifts_count(&self) -> u8 {
         self.lifts.read().unwrap().iter().sum()
     }
 
-    fn higher_priority(&self, my_time: u16, sender_time: u16, sender_rank: i32) -> bool {
+    fn sender_priority(&self, my_time: u16, sender_time: u16, sender_rank: i32) -> bool {
         (my_time > sender_time) || (my_time == sender_time && self.rank > sender_rank)
     }
 
-    fn next_state(&self) {
-        let new_state = match self.state() {
+    fn next_state<F>(&self, transition_logic: F)
+    where
+        F: FnOnce(),
+    {
+        let mut current_state = self.state.write().unwrap();
+        let new_state = match *current_state {
             AgentState::Rest => AgentState::Try,
             AgentState::Try => AgentState::Down,
             AgentState::Down => AgentState::Crit,
@@ -115,8 +119,9 @@ impl Agent {
             AgentState::Leaving => AgentState::Up,
             AgentState::Up => AgentState::Rest,
         };
+        transition_logic();
         self.clock.inc();
-        self.set_state(new_state);
+        *current_state = new_state;
     }
 
     fn run(&self) {
@@ -124,88 +129,105 @@ impl Agent {
         let logger = util::Logger::new(&self.clock, self.rank);
         match self.state() {
             AgentState::Rest => {
-                logger.log("Sending requests for resources to go down".to_string());
-                self.set_enter_time();
-                communicator.broadcast_with_time(&vec![], MessageTag::EnterRequest as i32);
-                *self.rooms.write().unwrap() = (0..self.common_state.world_size)
-                    .map(|index| {
+                self.next_state(|| {
+                    let mut rooms = self.rooms.write().unwrap();
+                    let mut lifts = self.lifts.write().unwrap();
+                    logger.log("Sending requests for resources to go down".to_string());
+                    self.set_enter_time();
+                    communicator.broadcast_with_time(&vec![], MessageTag::EnterRequest as i32);
+                    (0..self.config.world_size).for_each(|index| {
                         if index == self.rank as usize {
-                            self.need
+                            rooms[index] = self.need;
+                            lifts[index] = 1;
                         } else {
-                            self.common_state.rooms_count
+                            rooms[index] = rooms.get(index).unwrap_or(&0) + self.config.rooms_count;
+                            lifts[index] = lifts.get(index).unwrap_or(&0) + 1;
                         }
-                    })
-                    .collect();
-                *self.lifts.write().unwrap() = vec![1; self.common_state.world_size];
-                self.next_state();
+                    });
+                });
             }
             AgentState::Try => {
                 logger.log("Trying to go down".to_string());
-                if self.taken_rooms_count() <= self.common_state.rooms_count
-                    && self.taken_lifts_count() <= self.common_state.lifts_count
+                if self.taken_rooms_count() <= self.config.rooms_count
+                    && self.taken_lifts_count() <= self.config.lifts_count
                 {
-                    logger.log("Going down".to_string());
-                    self.next_state();
+                    self.next_state(|| logger.log("Going down".to_string()));
                 }
             }
             AgentState::Down => {
-                let deferred_lift_msg = vec![0, 1];
-                logger.log("Entering the critical section".to_string());
-                self.defer_lifts
-                    .write()
-                    .unwrap()
-                    .drain(..)
-                    .for_each(|rank| {
-                        logger.log(format!("Granting a deferred lift to {}", rank));
-                        communicator.send_with_time(
-                            &deferred_lift_msg,
-                            rank as i32,
-                            MessageTag::Resources as i32,
-                        );
-                    });
-                self.next_state();
+                self.next_state(|| {
+                    let deferred_lift_msg = vec![0, 1];
+                    logger.log("Entering the critical section".to_string());
+                    self.defer_lifts
+                        .write()
+                        .unwrap()
+                        .drain(..)
+                        .for_each(|rank| {
+                            logger.log(format!("Granting a deferred lift to {}", rank));
+                            communicator.send_with_time(
+                                &deferred_lift_msg,
+                                rank as i32,
+                                MessageTag::Resources as i32,
+                            );
+                        });
+                });
             }
             AgentState::Crit => {
-                *self.lifts.write().unwrap() = vec![1; self.common_state.world_size];
-                self.set_leave_time();
-                logger.log("Sending requests for resources to go up".to_string());
-                communicator.broadcast_with_time(&vec![], MessageTag::LeaveRequest as i32);
-                self.next_state();
+                self.next_state(|| {
+                    let mut lifts = self.lifts.write().unwrap();
+                    *lifts = lifts.iter().map(|v| v + 1).collect();
+                    lifts[self.rank as usize] = 1;
+                    self.set_leave_time();
+                    logger.log("Sending requests for resources to go up".to_string());
+                    communicator.broadcast_with_time(&vec![], MessageTag::LeaveRequest as i32);
+                });
             }
             AgentState::Leaving => {
                 logger.log("Trying to leave the critical section".to_string());
-                if self.taken_lifts_count() <= self.common_state.lifts_count {
-                    logger.log("Leaving the critical section".to_string());
-                    self.next_state();
+                if self.taken_lifts_count() <= self.config.lifts_count {
+                    self.next_state(|| logger.log("Leaving the critical section".to_string()));
                 }
             }
             AgentState::Up => {
-                let deferred_lifts: Vec<_> = self.defer_lifts.write().unwrap().drain(..).collect();
-                self.defer_rooms
-                    .write()
-                    .unwrap()
-                    .drain(..)
-                    .map(|rank| match deferred_lifts.iter().find(|&&r| r == rank) {
-                        Some(_) => (rank, vec![self.need as u16, 1]),
-                        None => (rank, vec![self.need as u16, 0]),
-                    })
-                    .inspect(|(rank, message)| {
-                        logger.log(format!(
-                            "Granting {} deferred rooms and {} lift to process #{}",
-                            message[0],
-                            if message[1] == 1 { "a" } else { "no" },
-                            rank
-                        ))
-                    })
-                    .for_each(|(rank, message)| {
-                        communicator.send_with_time(
-                            &message,
-                            rank as i32,
-                            MessageTag::Resources as i32,
-                        );
-                    });
-                logger.log("Going to rest".to_string());
-                self.next_state();
+                self.next_state(|| {
+                    let mut messages = vec![(0, 0); self.config.world_size];
+                    self.defer_rooms
+                        .write()
+                        .unwrap()
+                        .drain(..)
+                        .for_each(|rank| {
+                            let (rooms, _lifts) = messages[rank as usize];
+                            messages[rank as usize].0 = rooms + self.need as u16;
+                        });
+                    self.defer_lifts
+                        .write()
+                        .unwrap()
+                        .drain(..)
+                        .for_each(|rank| {
+                            let (_rooms, lifts) = messages[rank as usize];
+                            messages[rank as usize].1 = lifts + 1;
+                        });
+                    messages
+                        .iter()
+                        .enumerate()
+                        .filter(|(_rank, message)| message.0 != 0 || message.1 != 0)
+                        .inspect(|(rank, message)| {
+                            logger.log(format!(
+                                "Granting {} deferred rooms and {} lifts to process #{}",
+                                message.0,
+                                message.1,
+                                rank
+                            ))
+                        })
+                        .for_each(|(rank, message)| {
+                            communicator.send_with_time(
+                                &vec![message.0, message.1],
+                                rank as i32,
+                                MessageTag::Resources as i32,
+                            );
+                        });
+                    logger.log("Going to rest".to_string());
+                });
             }
         }
     }
@@ -215,18 +237,20 @@ impl Agent {
     }
 
     pub fn handle_enter_request(&self, sender_rank: i32, request_time: u16) {
+        let current_state = self.state.read().unwrap();
         let communicator = comm::TimestampedCommunicator::new(&self.clock, &self.world);
         let logger = util::Logger::new(&self.clock, self.rank);
         let message: Vec<u16>;
-        if matches!(self.state(), AgentState::Rest)
-            || self.higher_priority(self.enter_time(), request_time, sender_rank)
+
+        if matches!(*current_state, AgentState::Rest)
+            || self.sender_priority(self.enter_time(), request_time, sender_rank)
         {
-            message = vec![self.common_state.rooms_count as u16, 1];
-        } else if matches!(self.state(), AgentState::Crit) {
-            message = vec![(self.common_state.rooms_count - self.need) as u16, 1];
+            message = vec![self.config.rooms_count as u16, 1];
+        } else if matches!(*current_state, AgentState::Crit) {
+            message = vec![(self.config.rooms_count - self.need) as u16, 1];
             self.defer_rooms.write().unwrap().push(sender_rank as u8);
         } else {
-            message = vec![(self.common_state.rooms_count - self.need) as u16, 0];
+            message = vec![(self.config.rooms_count - self.need) as u16, 0];
             self.defer_rooms.write().unwrap().push(sender_rank as u8);
             self.defer_lifts.write().unwrap().push(sender_rank as u8);
         }
@@ -234,33 +258,51 @@ impl Agent {
             "Received a resource request, granting {} rooms and {} lift to process #{}",
             message[0],
             if message[1] == 1 { "a" } else { "no" },
-            sender_rank
+            sender_rank,
         ));
         communicator.send_with_time(&message, sender_rank, MessageTag::Resources as i32);
     }
 
     pub fn handle_leave_request(&self, sender_rank: i32, request_time: u16) {
-        if matches!(self.state(), AgentState::Leaving | AgentState::Up)
-            && self.higher_priority(self.leave_time(), request_time, sender_rank)
+        let current_state = self.state.read().unwrap();
+        if matches!(*current_state, AgentState::Leaving | AgentState::Up)
+            && !self.sender_priority(self.leave_time(), request_time, sender_rank)
         {
+            util::Logger::new(&self.clock, self.rank).log(format!(
+                "Received a resource request, not granting a lift to process #{}",
+                sender_rank,
+            ));
             self.defer_lifts.write().unwrap().push(sender_rank as u8);
         } else {
+            util::Logger::new(&self.clock, self.rank).log(format!(
+                "Received a resource request, granting a lift to process #{}",
+                sender_rank,
+            ));
+            self.set_lifts_at_rank(sender_rank, self.lifts_at_rank(sender_rank) + 1);
             let message = vec![0, 1];
             let communicator = comm::TimestampedCommunicator::new(&self.clock, &self.world);
-            self.set_lifts_at_rank(sender_rank, self.lifts_at_rank(sender_rank) + 1);
-            communicator.send_with_time(&message, sender_rank, MessageTag::Resources as i32);
+            communicator.send_with_time(&message, sender_rank, MessageTag::LeaveResources as i32);
         }
     }
 
-    pub fn handle_resources(&self, sender_rank: i32, rooms: u16, lifts: u16) {
-        self.set_rooms_at_rank(sender_rank, self.rooms_at_rank(sender_rank) - rooms as u8);
-        self.set_lifts_at_rank(sender_rank, self.lifts_at_rank(sender_rank) - lifts as u8);
+    pub fn handle_resources(&self, sender_rank: i32, msg_rooms: u16, msg_lifts: u16) {
+        let mut rooms = self.rooms.write().unwrap();
+        let mut lifts = self.lifts.write().unwrap();
+        rooms[sender_rank as usize] -= msg_rooms as u8;
+        lifts[sender_rank as usize] -= msg_lifts as u8;
+
         util::Logger::new(&self.clock, self.rank).log(format!(
             "Received resource information: {} rooms and {} lifts claimed by process #{}",
-            self.rooms_at_rank(sender_rank),
-            self.lifts_at_rank(sender_rank),
-            sender_rank,
+            rooms[sender_rank as usize], lifts[sender_rank as usize], sender_rank,
         ));
+    }
+
+    pub fn handle_leave_resources(&self, sender_rank: i32) {
+        let mut lifts = self.lifts.write().unwrap();
+        util::Logger::new(&self.clock, self.rank)
+            .log(format!("Received a lift from process #{}", sender_rank));
+        lifts[sender_rank as usize] -= 1;
+        self.defer_lifts.write().unwrap().push(sender_rank as u8);
     }
 
     pub fn finish(&self) {
