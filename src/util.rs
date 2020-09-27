@@ -24,6 +24,6 @@ impl<'clock_lifetime> Logger<'clock_lifetime> {
 }
 
 pub fn sleep_random() {
-    let secs = rand::thread_rng().gen_range(3, 8);
-    std::thread::sleep(std::time::Duration::from_secs(secs));
+    let secs = rand::thread_rng().gen_range(500, 10000);
+    std::thread::sleep(std::time::Duration::from_millis(secs));
 }

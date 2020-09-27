@@ -3,7 +3,6 @@ extern crate ctrlc;
 extern crate mpi;
 
 use mpi::{traits::*, Threading};
-use rand::Rng;
 use std::env;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -98,12 +97,7 @@ fn main() {
 
     // set up problem instance
     let config = Config::new(rooms_count, lifts_count, world.size() as usize);
-    let agent = Arc::new(agent::Agent::new(
-        rank,
-        rand::thread_rng().gen_range(1, config.rooms_count),
-        config,
-        universe.world(),
-    ));
+    let agent = Arc::new(agent::Agent::new(rank, config, universe.world()));
 
     // state machine thread
     let agent_main = agent.clone();

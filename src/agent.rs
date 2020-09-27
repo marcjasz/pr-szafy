@@ -1,13 +1,13 @@
-#![allow(dead_code)]
 use crate::comm;
 use crate::util;
 use crate::Config;
 use crate::MessageTag;
+use rand::Rng;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::RwLock;
 
 pub struct Agent {
-    need: u8,
+    need: RwLock<u8>,
     rank: i32,
     enter_time: RwLock<u16>,
     leave_time: RwLock<u16>,
@@ -32,14 +32,9 @@ enum AgentState {
 }
 
 impl Agent {
-    pub fn new(
-        rank: i32,
-        need: u8,
-        config: Config,
-        world: mpi::topology::SystemCommunicator,
-    ) -> Self {
+    pub fn new(rank: i32, config: Config, world: mpi::topology::SystemCommunicator) -> Self {
         Self {
-            need,
+            need: RwLock::new(0),
             rank,
             state: RwLock::new(AgentState::Rest),
             enter_time: RwLock::new(u16::MAX),
@@ -58,10 +53,6 @@ impl Agent {
         *self.state.read().unwrap()
     }
 
-    fn set_state(&self, state: AgentState) {
-        *self.state.write().unwrap() = state
-    }
-
     fn enter_time(&self) -> u16 {
         *self.enter_time.read().unwrap()
     }
@@ -76,14 +67,6 @@ impl Agent {
 
     fn set_leave_time(&self) {
         *self.leave_time.write().unwrap() = self.clock.time();
-    }
-
-    fn rooms_at_rank(&self, rank: i32) -> u8 {
-        self.rooms.read().unwrap()[rank as usize]
-    }
-
-    fn set_rooms_at_rank(&self, rank: i32, rooms: u8) {
-        self.rooms.write().unwrap()[rank as usize] = rooms
     }
 
     fn taken_rooms_count(&self) -> u8 {
@@ -132,12 +115,14 @@ impl Agent {
                 self.next_state(|| {
                     let mut rooms = self.rooms.write().unwrap();
                     let mut lifts = self.lifts.write().unwrap();
+                    let mut need = self.need.write().unwrap();
+                    *need = rand::thread_rng().gen_range(1, self.config.rooms_count);
                     logger.log("Sending requests for resources to go down".to_string());
                     self.set_enter_time();
                     communicator.broadcast_with_time(&vec![], MessageTag::EnterRequest as i32);
                     (0..self.config.world_size).for_each(|index| {
                         if index == self.rank as usize {
-                            rooms[index] = self.need;
+                            rooms[index] = *need;
                             lifts[index] = 1;
                         } else {
                             rooms[index] = rooms.get(index).unwrap_or(&0) + self.config.rooms_count;
@@ -191,13 +176,14 @@ impl Agent {
             AgentState::Up => {
                 self.next_state(|| {
                     let mut messages = vec![(0, 0); self.config.world_size];
+                    let need = self.need.read().unwrap();
                     self.defer_rooms
                         .write()
                         .unwrap()
                         .drain(..)
                         .for_each(|rank| {
                             let (rooms, _lifts) = messages[rank as usize];
-                            messages[rank as usize].0 = rooms + self.need as u16;
+                            messages[rank as usize].0 = rooms + *need as u16;
                         });
                     self.defer_lifts
                         .write()
@@ -236,6 +222,7 @@ impl Agent {
 
     pub fn handle_enter_request(&self, sender_rank: i32, request_time: u16) {
         let current_state = self.state.read().unwrap();
+        let need = self.need.read().unwrap();
         let communicator = comm::TimestampedCommunicator::new(&self.clock, &self.world);
         let logger = util::Logger::new(&self.clock, self.rank);
         let message: Vec<u16>;
@@ -245,10 +232,10 @@ impl Agent {
         {
             message = vec![self.config.rooms_count as u16, 1];
         } else if matches!(*current_state, AgentState::Crit) {
-            message = vec![(self.config.rooms_count - self.need) as u16, 1];
+            message = vec![(self.config.rooms_count - *need) as u16, 1];
             self.defer_rooms.write().unwrap().push(sender_rank as u8);
         } else {
-            message = vec![(self.config.rooms_count - self.need) as u16, 0];
+            message = vec![(self.config.rooms_count - *need) as u16, 0];
             self.defer_rooms.write().unwrap().push(sender_rank as u8);
             self.defer_lifts.write().unwrap().push(sender_rank as u8);
         }
